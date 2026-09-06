@@ -1,9 +1,10 @@
 # -*- encoding: utf-8 -*-
 import datetime
+import math
 from dataclasses import asdict
 
 from keri.help import ogler
-from mongoengine import Document, StringField, IntField, DictField
+from mongoengine import Document, StringField, DictField, Q, DateTimeField
 
 from castellan.core.services.custom.custom_errors import ConflictError, NotFoundError
 
@@ -18,9 +19,11 @@ class Account(Document):
     email = StringField(required=False)
     first_name = StringField(required=False)
     last_name = StringField(required=False)
+    role = StringField(required=False)
+    status = StringField(required=False)
     key_state = DictField()
     kel = StringField()
-    lastModified = IntField()
+    created_at = DateTimeField(default=datetime.datetime.now)
 
 
 class AccountService:
@@ -49,7 +52,8 @@ class AccountService:
         """Creates a new account and stores it in the Account collection."""
         # Create a new Account document
         account = Account(**doc)
-        account.lastModified = int(datetime.datetime.now().timestamp())
+        account.created_at = datetime.datetime.now()
+        account.status = "active"
         aid = doc["aid"]
 
         if self.account_exists(account.aid):
@@ -146,10 +150,57 @@ class AccountService:
             raise RuntimeError(f"An error occurred querying account: {e}")
 
     @staticmethod
-    def list_accounts():
-        """Returns all Accounts in the system."""
+    def list_accounts(
+            flter=None,
+            role=None,
+            page=0,
+            page_size=20,
+            order=None,
+
+    ):
+        """Returns all Accounts in the system.
+
+        Parameters:
+            flter: Case-insensitive string searched across all document fields
+                    and all sad dict values (via _search_text).
+            role: Exact match on role string.
+            page: Zero-indexed page number.
+            page_size: Number of results per page (default 20).
+            order: MongoEngine order_by string or list of strings,
+                   e.g. "+created_at" or ["-said", "+issuer"].
+
+        """
         try:
-            return list(Account.objects.all())
+            qs = Account.objects()
+
+            # Exact-match filters
+            if role is not None:
+                qs = qs.filter(role=role)
+
+            # Free-text search across fixed fields and sad values
+            if flter:
+                qs = qs.flter(
+                    Q(said__icontains=flter)
+                    | Q(issuer__icontains=flter)
+                    | Q(recipient__icontains=flter)
+                    | Q(status__icontains=flter)
+                    | Q(search_text__icontains=flter)
+                )
+
+            # Ordering
+            if order:
+                if isinstance(order, str):
+                    order = [order]
+                qs = qs.order_by(*order)
+            else:
+                qs = qs.order_by("-created_at")
+
+            total = qs.count()
+            num_pages = max(1, math.ceil(total / page_size)) if total > 0 else 1
+            accounts = list(qs.skip(page * page_size).limit(page_size))
+
+            return accounts, total, num_pages
+
         except Exception as e:
             raise RuntimeError(f"An error occurred querying accounts: {e}")
 
@@ -196,8 +247,11 @@ class AccountService:
         if account is None:
             raise NotFoundError("Account not found: " + aid)
 
-        # Set lastModified timestamp
-        account.lastModified = int(datetime.datetime.now().timestamp())
+        if account.role in ("owner", "") and doc.get("role") != "owner":
+            total_owners = Account.objects.count({'role': "owner"})
+            if total_owners < 2:
+                raise ValueError("There must be at least one role 'Owner' account")
+
         update = False
 
         # Update fields from the input doc
@@ -232,10 +286,21 @@ class AccountService:
         except Exception as e:
             raise RuntimeError(f"Error {e} updating account {account.aid}")
 
-    def delete_account(self, account_id):
+    @staticmethod
+    def delete_account(account_id):
         """Delete an account
 
         Parameters:
             account_id (str): The account ID to delete
         """
-        Account.objects(aid=account_id).delete()
+        account = Account.objects(aid=account_id).first()
+
+        if account.role == "owner":
+            raise ValueError("Cannot delete account with role 'Owner'")
+
+        try:
+            account.delete()
+        except Exception as e:
+            raise RuntimeError(f"Error deleting account: {e}")
+        logger.info(f"Deleted account: {account_id}")
+

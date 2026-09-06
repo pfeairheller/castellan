@@ -6,6 +6,7 @@ Falcon application factory and service wiring for the castellan credential serve
 """
 
 import falcon
+from castellan.app.api.account import AccountCollectionEnd, AccountResourceEnd
 from castellan.app.api.identifier import (
     IdentifierCollectionEnd,
     IdentifierKelEnd,
@@ -211,6 +212,10 @@ def setup(
     # Intra-enterprise mailbox routes
     app.add_route("/messages", MessageCollectionEnd(msg_svc))
     app.add_route("/messages/{id}", MessageResourceEnd(msg_svc))
+
+    # Account management routes
+    app.add_route("/accounts", AccountCollectionEnd(account_svc))
+    app.add_route("/accounts/{aid}", AccountResourceEnd(account_svc))
 
     # Health check route (authenticated — verifies the signed connection works
     # end-to-end, not just that the process is alive)
